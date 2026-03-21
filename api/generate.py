@@ -5,6 +5,13 @@ import re
 
 from flask import Flask, jsonify, request
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 from src.crawler import crawl
 from src.formatter import generate_llms_txt
 from src.llm import _normalize_url, enrich_pages
@@ -12,7 +19,7 @@ from src.llm import _normalize_url, enrich_pages
 app = Flask(__name__)
 
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
-DEFAULT_MAX_PAGES = 50
+DEFAULT_MAX_PAGES = 30
 
 def _after_request(response):
     response.headers["Access-Control-Allow-Origin"] = "*"

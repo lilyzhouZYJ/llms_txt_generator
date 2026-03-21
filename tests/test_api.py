@@ -13,6 +13,14 @@ def client():
     return app.test_client()
 
 
+def test_generate_options_cors_headers(client):
+    resp = client.options("/api/generate")
+    assert resp.status_code == 204
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert "POST" in (resp.headers.get("Access-Control-Allow-Methods") or "")
+    assert "OPTIONS" in (resp.headers.get("Access-Control-Allow-Methods") or "")
+
+
 def test_generate_invalid_url(client, mocker):
     mocker.patch("api.generate.crawl")
     mocker.patch("api.generate.enrich_pages")

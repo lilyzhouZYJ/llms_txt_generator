@@ -8,7 +8,7 @@ An automated `llms.txt` generator. The user inputs a website URL; the tool crawl
 
 | Layer | Technology |
 |---|---|
-| Crawler / Backend | Python 3.11, httpx, BeautifulSoup4 |
+| Crawler / Backend | Python 3.12, httpx, BeautifulSoup4 |
 | LLM enrichment | OpenAI (`src/llm.py`), `OPENAI_API_KEY` (see `.env.example`) |
 | API | Flask (Vercel Python serverless function) |
 | Tests | pytest, pytest-mock, respx |
@@ -27,7 +27,7 @@ tests/                # pytest test suite
 public/               # Static frontend (index.html, style.css, app.js)
 requirements.txt      # Python dependencies
 vercel.json           # Vercel routing config
-.python-version       # Pins Python 3.11
+.python-version       # Pins Python 3.12 (required for `vercel dev` / vercel-runtime)
 ```
 
 ## Implementation Plan
@@ -61,3 +61,4 @@ See `plan.md` for the full phase-by-phase breakdown. Phases are executed in this
 - Section inference lives exclusively in `src/extractor.py` — do not duplicate it elsewhere.
 - The formatter must not import from `crawler.py` or `extractor.py`; it only consumes plain `dict` objects.
 - Flask is used solely as a thin HTTP wrapper in `api/generate.py`; business logic stays in `src/`.
+- Vercel looks for a Flask entry under `api/` (e.g. `api/app.py` re-exporting `app` from `api.generate`). Do not add a **root** `app.py` (wrong install context). Local API: `flask --app api.generate:app run` or `flask --app api.app:app run`.

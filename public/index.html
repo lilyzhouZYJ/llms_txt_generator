@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>llms.txt generator</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>llms.txt generator</h1>
+        <p class="lede">
+          Enter a site URL to crawl and build a spec-style
+          <a href="https://llmstxt.org/">llms.txt</a> file.
+        </p>
+      </header>
+
+      <div id="error-banner" class="banner banner--error" role="alert" hidden></div>
+
+      <form id="generate-form" class="form" novalidate>
+        <label class="field">
+          <span class="field__label">Website URL</span>
+          <input
+            id="url"
+            name="url"
+            type="url"
+            inputmode="url"
+            autocomplete="url"
+            placeholder="https://example.com"
+            required
+          />
+        </label>
+
+        <button type="button" id="advanced-toggle" class="link-button" aria-expanded="false" aria-controls="advanced-fields">
+          Advanced
+        </button>
+
+        <div id="advanced-fields" class="advanced" hidden>
+          <label class="field">
+            <span class="field__label">Max pages</span>
+            <input
+              id="max-pages"
+              name="maxPages"
+              type="number"
+              min="1"
+              max="100"
+              value="30"
+            />
+          </label>
+        </div>
+
+        <div class="form__actions">
+          <button type="submit" id="submit-btn" class="button button--primary">Generate</button>
+          <span id="loading" class="loading" hidden aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            Crawling…
+          </span>
+        </div>
+      </form>
+
+      <section id="output-section" class="output" hidden>
+        <h2 class="output__heading">Generated llms.txt</h2>
+        <textarea id="output-text" class="output__textarea" readonly rows="18" spellcheck="false"></textarea>
+        <div class="output__actions">
+          <button type="button" id="copy-btn" class="button button--secondary">Copy to clipboard</button>
+          <button type="button" id="download-btn" class="button button--secondary">Download llms.txt</button>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
