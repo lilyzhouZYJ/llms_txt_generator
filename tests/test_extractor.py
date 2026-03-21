@@ -84,6 +84,33 @@ def test_extracts_title_from_title_tag():
     meta = extract_metadata(html, "https://example.com/")
     assert meta["title"] == "My Page"
 
+
+def test_uses_first_title_when_multiple_in_head():
+    html = """<html><head>
+        <title>Correct</title>
+        <title>Ignored duplicate</title>
+    </head><body></body></html>"""
+    meta = extract_metadata(html, "https://example.com/")
+    assert meta["title"] == "Correct"
+
+
+def test_ignores_svg_title_for_page_title():
+    """SVG <title> labels logos; the real document title stays in <head>."""
+    html = """<html><head><title>Free AEO Report — See Your Brand</title></head><body>
+        <svg xmlns="http://www.w3.org/2000/svg"><title>ChatGPT</title><path d="M0 0"/></svg>
+    </body></html>"""
+    meta = extract_metadata(html, "https://example.com/aeo-report")
+    assert meta["title"] == "Free AEO Report — See Your Brand"
+
+
+def test_only_svg_titles_fall_back_to_og_title():
+    html = """<html><head>
+        <meta property="og:title" content="From Open Graph">
+    </head><body><svg><title>ChatGPT</title></svg></body></html>"""
+    meta = extract_metadata(html, "https://example.com/")
+    assert meta["title"] == "From Open Graph"
+
+
 def test_falls_back_to_og_title():
     html = """<html><head>
         <meta property="og:title" content="OG Title">

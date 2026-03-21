@@ -6,6 +6,9 @@ __pycache__/
 .vercel/
 *.egg-info/
 dist/
+node_modules/
 
 # test files
 test.md
+.vercel
+.env*.local

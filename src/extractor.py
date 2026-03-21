@@ -25,6 +25,33 @@ _SECTION_MAP = {
     "company": "About",
 }
 
+def _is_html_document_title(tag) -> bool:
+    """True for the HTML document title, not <title> inside SVG/Math (accessibility labels)."""
+    if not tag or getattr(tag, "name", None) != "title":
+        return False
+    return tag.find_parent("svg") is None and tag.find_parent("math") is None
+
+
+def _first_title_text(soup: BeautifulSoup) -> str:
+    """
+    HTML document title: prefer <title> in <head>, else first non-SVG <title> in the tree.
+
+    SVG (and MathML) embeds use <title> for accessible names; those must not replace the
+    real page title. Crawlers that do soup.find(\"title\") alone can pick \"ChatGPT\" from
+    an inline logo before the actual <head><title>.
+    """
+    if soup.head:
+        for el in soup.head.find_all("title"):
+            if _is_html_document_title(el):
+                text = el.get_text(separator=" ", strip=True)
+                if text:
+                    return text
+    for el in soup.find_all("title"):
+        if _is_html_document_title(el):
+            text = el.get_text(separator=" ", strip=True)
+            if text:
+                return text
+    return ""
 
 def _infer_section(url: str) -> str:
     path = urlparse(url).path.strip("/")
@@ -33,7 +60,6 @@ def _infer_section(url: str) -> str:
     first_segment = path.split("/")[0].lower()
     return _SECTION_MAP.get(first_segment, first_segment.capitalize())
 
-
 def _extract_main_text(html: str, max_chars: int = 3000) -> str:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup.find_all(_BOILERPLATE_TAGS):
@@ -41,17 +67,14 @@ def _extract_main_text(html: str, max_chars: int = 3000) -> str:
     text = soup.get_text(separator=" ", strip=True)
     return text[:max_chars]
 
-
 def extract_metadata(html: str, url: str) -> dict:
     """
     Extract metadata from an HTML page.
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Title: <title> → og:title → last URL path segment
-    title = ""
-    if soup.title and soup.title.string:
-        title = soup.title.string.strip()
+    # Title: first <title> in head → og:title → last URL path segment
+    title = _first_title_text(soup)
     if not title:
         og_title = soup.find("meta", property="og:title")
         if og_title:
