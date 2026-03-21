@@ -14,7 +14,8 @@ except ImportError:
 
 from src.crawler import crawl
 from src.formatter import generate_llms_txt
-from src.llm import _normalize_url, enrich_pages
+from src.llm import llm_process_pages
+from src.url_utils import normalize_http_url
 
 app = Flask(__name__)
 
@@ -58,10 +59,12 @@ def generate():
         )
 
     try:
-        enriched, site_name, site_summary = enrich_pages(pages, url)
-        root = _normalize_url(url)
-        pages_for_links = [p for p in enriched if _normalize_url(p["url"]) != root]
-        llmstxt = generate_llms_txt(pages_for_links, site_name, site_summary)
+        enriched, site_name, site_summary, section_order = llm_process_pages(pages, url)
+        root = normalize_http_url(url)
+        pages_for_links = [p for p in enriched if normalize_http_url(p["url"]) != root]
+        llmstxt = generate_llms_txt(
+            pages_for_links, site_name, site_summary, section_order=section_order
+        )
     except Exception:
         return jsonify(error="Internal server error"), 500
 

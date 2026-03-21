@@ -47,7 +47,7 @@ def main():
         sections.setdefault(p.get("section", "?"), []).append(p["url"])
 
     print("Section summary:")
-    for section, urls in sorted(sections.items(), key=lambda x: (x[0] != "Overview", x[0])):
+    for section, urls in sorted(sections.items()):
         print(f"  {section} ({len(urls)} page{'s' if len(urls) != 1 else ''})")
 
 if __name__ == "__main__":

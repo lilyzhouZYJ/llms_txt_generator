@@ -4,12 +4,13 @@ BFS crawler; fetch pages, extract internal links, extract metadata using the ext
 
 import asyncio
 import traceback
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from src.extractor import extract_metadata
+from src.url_utils import normalize_http_url
 
 USER_AGENT = "llms-txt-generator/1.0"
 TIMEOUT = 10.0
@@ -61,19 +62,6 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> str | None:
         traceback.print_exc()
         return None
 
-def _normalize_link(url: str) -> str:
-    """
-    Helper function to strip fragment/query from URLs and normalize path.
-    e.g. /foo?sort=asc -> /foo
-    """
-    parsed = urlparse(url)
-    scheme = (parsed.scheme or "https").lower()
-    netloc = parsed.netloc.lower()
-    # strip trailing slash from path, unless we are at root
-    # e.g. /foo/ -> /foo, /foo -> /foo, / -> /
-    path = (parsed.path or "/").rstrip("/") or "/"
-    return urlunparse((scheme, netloc, path, "", "", ""))
-
 def is_allowed_url(url: str, start_url: str) -> bool:
     """
     Whether a URL may be fetched: http(s), same domain or subdomain as start_url,
@@ -117,7 +105,7 @@ def get_internal_links(html: str, page_url: str, start_url: str) -> list[str]:
         absolute_url = urljoin(page_url, href)
 
         # check if the URL is allowed
-        normalized_url = _normalize_link(absolute_url)
+        normalized_url = normalize_http_url(absolute_url)
         if not is_allowed_url(normalized_url, start_url):
             continue
 
@@ -136,7 +124,7 @@ async def crawl(
     """
     BFS crawl from start_url.
     """
-    start_url = _normalize_link(start_url)
+    start_url = normalize_http_url(start_url)
     if not is_allowed_url(start_url, start_url):
         # sanity check
         return []

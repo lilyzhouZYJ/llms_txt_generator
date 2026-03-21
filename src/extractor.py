@@ -56,7 +56,7 @@ def _first_title_text(soup: BeautifulSoup) -> str:
 def _infer_section(url: str) -> str:
     path = urlparse(url).path.strip("/")
     if not path:
-        return "Overview"
+        return "Home"
     first_segment = path.split("/")[0].lower()
     return _SECTION_MAP.get(first_segment, first_segment.capitalize())
 

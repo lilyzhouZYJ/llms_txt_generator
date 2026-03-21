@@ -8,10 +8,10 @@ from src.extractor import _infer_section, _extract_main_text, extract_metadata
 # ---------------------------------------------------------------------------
 
 def test_section_inference_root():
-    assert _infer_section("https://example.com/") == "Overview"
+    assert _infer_section("https://example.com/") == "Home"
 
 def test_section_inference_root_no_trailing_slash():
-    assert _infer_section("https://example.com") == "Overview"
+    assert _infer_section("https://example.com") == "Home"
 
 def test_section_inference_blog():
     assert _infer_section("https://example.com/blog/my-post") == "Blog"
@@ -83,6 +83,7 @@ def test_extracts_title_from_title_tag():
     html = "<html><head><title>My Page</title></head><body></body></html>"
     meta = extract_metadata(html, "https://example.com/")
     assert meta["title"] == "My Page"
+    assert meta["section"] == "Home"
 
 
 def test_uses_first_title_when_multiple_in_head():

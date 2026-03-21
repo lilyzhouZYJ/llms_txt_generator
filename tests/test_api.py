@@ -23,7 +23,7 @@ def test_generate_options_cors_headers(client):
 
 def test_generate_invalid_url(client, mocker):
     mocker.patch("api.generate.crawl")
-    mocker.patch("api.generate.enrich_pages")
+    mocker.patch("api.generate.llm_process_pages")
     mocker.patch("api.generate.generate_llms_txt")
     resp = client.post(
         "/api/generate",
@@ -52,17 +52,20 @@ def test_generate_empty_crawl(client, mocker):
 
 async def _fake_crawl(*_args, **_kwargs):
     return [
-        {"url": "https://example.com/", "title": "Home", "description": "", "section": "Overview"},
+        {"url": "https://example.com/", "title": "Home", "description": "", "section": "Home"},
     ]
 
 
 def test_generate_success(client, mocker):
     pages = [
-        {"url": "https://example.com/", "title": "Home", "description": "", "section": "Overview"},
+        {"url": "https://example.com/", "title": "Home", "description": "", "section": "Home"},
     ]
     mocker.patch("api.generate.crawl", side_effect=_fake_crawl)
-    mocker.patch("api.generate.enrich_pages", return_value=(pages, "Example", "A site."))
-    mocker.patch("api.generate.generate_llms_txt", return_value="# Example\n> A site.\n\n## Overview\n- [Home](https://example.com/)\n")
+    mocker.patch(
+        "api.generate.llm_process_pages",
+        return_value=(pages, "Example", "A site.", ["Home"]),
+    )
+    mocker.patch("api.generate.generate_llms_txt", return_value="# Example\n> A site.\n\n## Home\n- [Home](https://example.com/)\n")
 
     resp = client.post(
         "/api/generate",

@@ -1,13 +1,16 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from src.llm import (
     DEFAULT_MODEL,
     ENV_API_KEY,
-    _merge_llm_into_pages,
     _rule_based_fallback,
-    enrich_pages,
-    enrich_with_llm,
+    _update_pages_with_llm_sections,
+    _update_pages_with_llm_summaries,
+    llm_generate_page_summaries,
+    llm_process_pages,
 )
 
 
@@ -17,13 +20,13 @@ def _fake_completion(content: str):
     )
 
 
-def test_enrich_pages_returns_llm_data_on_success(mocker):
+def test_llm_process_pages_returns_llm_data_on_success(mocker):
     pages_in = [
         {
             "url": "https://example.com/",
             "title": "Home",
             "description": "Old",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "Welcome.",
         },
         {
@@ -42,62 +45,73 @@ def test_enrich_pages_returns_llm_data_on_success(mocker):
                 "url": "https://example.com/",
                 "title": "Home",
                 "description": "Welcome to our site.",
-                "section": "Overview",
             },
             {
                 "url": "https://example.com/blog/a",
                 "title": "Post",
                 "description": "A blog article.",
-                "section": "Blog",
             },
+        ],
+    }
+    refine_json = {
+        "section_order": ["Blog", "Home"],
+        "pages": [
+            {"url": "https://example.com/", "section": "Home"},
+            {"url": "https://example.com/blog/a", "section": "Writing"},
         ],
     }
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(
-        return_value=_fake_completion(json.dumps(llm_json))
+        side_effect=[
+            _fake_completion(json.dumps(llm_json)),
+            _fake_completion(json.dumps(refine_json)),
+        ]
     )
     mocker.patch("src.llm._get_openai_client", return_value=client)
 
-    out_pages, site_name, summary = enrich_pages(pages_in, "https://example.com/")
+    out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
 
     assert site_name == "Example Co"
     assert summary == "A product company."
     assert out_pages[0]["description"] == "Welcome to our site."
-    assert out_pages[0]["section"] == "Overview"
-    assert out_pages[1]["section"] == "Blog"
+    assert out_pages[0]["section"] == "Home"
+    assert out_pages[1]["section"] == "Writing"
     assert out_pages[1]["description"] == "A blog article."
+    assert section_order == ["Home", "Writing"]
 
+    assert client.chat.completions.create.call_count == 2
     call_kw = client.chat.completions.create.call_args.kwargs
     assert call_kw["model"] == DEFAULT_MODEL
     assert call_kw["response_format"] == {"type": "json_object"}
 
 
-def test_enrich_pages_falls_back_on_api_error(mocker):
+def test_llm_process_pages_falls_back_on_api_error(mocker):
     pages_in = [
         {
             "url": "https://example.com/",
             "title": "Root Title",
             "description": "Root desc",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "",
         },
     ]
     mocker.patch("src.llm._get_openai_client", side_effect=RuntimeError("network"))
 
-    out_pages, site_name, summary = enrich_pages(pages_in, "https://example.com/")
+    out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
 
     assert site_name == "Root Title"
     assert summary == "Root desc"
     assert out_pages == pages_in
+    assert section_order is None
 
 
-def test_enrich_pages_falls_back_on_invalid_json(mocker):
+def test_llm_process_pages_falls_back_on_invalid_json(mocker):
     pages_in = [
         {
             "url": "https://example.com/",
             "title": "T",
             "description": "",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "",
         },
     ]
@@ -107,19 +121,20 @@ def test_enrich_pages_falls_back_on_invalid_json(mocker):
     )
     mocker.patch("src.llm._get_openai_client", return_value=client)
 
-    out_pages, site_name, _ = enrich_pages(pages_in, "https://example.com/")
+    out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
 
     assert out_pages == pages_in
     assert site_name == "T"
+    assert section_order is None
 
 
-def test_enrich_pages_falls_back_when_site_name_missing(mocker):
+def test_llm_process_pages_falls_back_when_site_name_missing(mocker):
     pages_in = [
         {
             "url": "https://example.com/",
             "title": "T",
             "description": "",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "",
         },
     ]
@@ -129,25 +144,27 @@ def test_enrich_pages_falls_back_when_site_name_missing(mocker):
     )
     mocker.patch("src.llm._get_openai_client", return_value=client)
 
-    out_pages, site_name, _ = enrich_pages(pages_in, "https://example.com/")
+    out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
     assert out_pages == pages_in
     assert site_name == "T"
+    assert section_order is None
 
 
-def test_enrich_pages_falls_back_without_api_key(mocker):
+def test_llm_process_pages_falls_back_without_api_key(mocker):
     mocker.patch.dict("os.environ", {ENV_API_KEY: ""}, clear=False)
     pages_in = [
         {
             "url": "https://example.com/",
             "title": "Only",
             "description": "",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "",
         },
     ]
-    out_pages, site_name, _ = enrich_pages(pages_in, "https://example.com/")
+    out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
     assert out_pages == pages_in
     assert site_name == "Only"
+    assert section_order is None
 
 
 def test_rule_based_fallback_uses_root_page_title():
@@ -156,7 +173,7 @@ def test_rule_based_fallback_uses_root_page_title():
             "url": "https://example.com/",
             "title": "My Site",
             "description": "Tagline",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "",
         },
         {
@@ -173,52 +190,128 @@ def test_rule_based_fallback_uses_root_page_title():
     assert summary == "Tagline"
 
 
-def test_rule_based_fallback_uses_domain_when_no_pages():
+def test_rule_based_fallback_empty_pages_uses_netloc_for_site_name():
     out, name, summary = _rule_based_fallback([], "https://example.com/path")
     assert out == []
     assert name == "example.com"
     assert summary == ""
 
 
-def test_merge_llm_into_pages_preserves_unmatched_urls():
+def test_rule_based_fallback_empty_pages_malformed_url_uses_fallback_site_name():
+    out, name, summary = _rule_based_fallback([], "")
+    assert out == []
+    assert name == "Unknown Website"
+    assert summary == ""
+
+
+def test_rule_based_fallback_root_empty_title_uses_fallback_site_name():
+    pages = [
+        {
+            "url": "https://example.com/",
+            "title": "",
+            "description": "Tagline",
+            "section": "Home",
+            "main_text": "",
+        },
+    ]
+    out, name, summary = _rule_based_fallback(pages, "https://example.com/")
+    assert out is pages
+    assert name == "Unknown Website"
+    assert summary == "Tagline"
+
+
+def test_update_pages_with_llm_summaries_preserves_unmatched_urls():
     pages = [
         {
             "url": "https://example.com/a",
             "title": "A",
             "description": "",
-            "section": "Overview",
+            "section": "Other",
             "main_text": "",
         },
     ]
     data = {"pages": []}
-    merged = _merge_llm_into_pages(pages, data)
+    merged = _update_pages_with_llm_summaries(pages, data)
     assert merged[0]["title"] == "A"
 
 
-def test_enrich_with_llm_strips_markdown_json_fence(mocker):
+def test_llm_generate_page_summaries_strips_markdown_json_fence(mocker):
     pages_in = [
         {
             "url": "https://example.com/",
             "title": "H",
             "description": "",
-            "section": "Overview",
+            "section": "Home",
             "main_text": "x",
         },
     ]
     body = """```json
-{"site_name": "S", "site_summary": "", "pages": [{"url": "https://example.com/", "title": "H", "description": "", "section": "Overview"}]}
+{"site_name": "S", "site_summary": "", "pages": [{"url": "https://example.com/", "title": "H", "description": ""}]}
 ```"""
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(return_value=_fake_completion(body))
     mocker.patch("src.llm._get_openai_client", return_value=client)
 
-    data = enrich_with_llm(pages_in, "https://example.com/", client=client)
+    data = llm_generate_page_summaries(pages_in, "https://example.com/", client=client)
     assert data["site_name"] == "S"
     assert len(data["pages"]) == 1
+    assert data["pages"][0]["section"] == "Home"
 
 
-def test_enrich_pages_empty_list():
-    out, name, summary = enrich_pages([], "https://example.com/")
-    assert out == []
-    assert name == "example.com"
-    assert summary == ""
+def test_llm_process_pages_empty_raises():
+    with pytest.raises(ValueError, match="pages is empty"):
+        llm_process_pages([], "https://example.com/")
+
+
+def test_llm_process_pages_keeps_first_pass_when_refine_fails(mocker):
+    pages_in = [
+        {
+            "url": "https://example.com/",
+            "title": "Home",
+            "description": "Old",
+            "section": "Home",
+            "main_text": "Welcome.",
+        },
+    ]
+    llm_json = {
+        "site_name": "Example Co",
+        "site_summary": "Summary.",
+        "pages": [
+            {
+                "url": "https://example.com/",
+                "title": "Home",
+                "description": "Welcome to our site.",
+            },
+        ],
+    }
+    client = mocker.MagicMock()
+    client.chat.completions.create = mocker.Mock(
+        side_effect=[
+            _fake_completion(json.dumps(llm_json)),
+            ValueError("refine failed"),
+        ]
+    )
+    mocker.patch("src.llm._get_openai_client", return_value=client)
+
+    out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
+    assert site_name == "Example Co"
+    assert out_pages[0]["section"] == "Home"
+    assert section_order is None
+
+
+def test_update_pages_with_llm_sections_fills_missing_order():
+    pages = [
+        {
+            "url": "https://example.com/a",
+            "title": "A",
+            "section": "Zebra",
+            "section_hint": "a",
+        },
+    ]
+    data = {
+        "section_order": [],
+        "pages": [{"url": "https://example.com/a", "section": "Alpha"}],
+    }
+    merged, order = _update_pages_with_llm_sections(pages, data)
+    assert merged[0]["section"] == "Alpha"
+    assert order == ["Alpha"]

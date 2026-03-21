@@ -1,30 +1,36 @@
 from src.formatter import DESCRIPTION_MAX_LEN, format_link_entry, generate_llms_txt, group_by_section
 
 
-def test_group_by_section_overview_first():
+def test_group_by_section_sorted_alphabetically():
     pages = [
         {"url": "u1", "title": "T", "section": "Blog"},
-        {"url": "u2", "title": "T", "section": "Overview"},
+        {"url": "u2", "title": "T", "section": "Home"},
         {"url": "u3", "title": "T", "section": "Docs"},
     ]
     grouped = group_by_section(pages)
     keys = list(grouped.keys())
-    assert keys[0] == "Overview"
-    assert "Blog" in keys
-    assert "Docs" in keys
+    assert keys == ["Blog", "Docs", "Home"]
 
 
-def test_group_by_section_alphabetical_after_overview():
+def test_group_by_section_alphabetical_all_sections():
     pages = [
         {"url": "u1", "title": "T", "section": "About"},
         {"url": "u2", "title": "T", "section": "API"},
-        {"url": "u3", "title": "T", "section": "Overview"},
+        {"url": "u3", "title": "T", "section": "Zoo"},
     ]
     grouped = group_by_section(pages)
     keys = list(grouped.keys())
-    assert keys[0] == "Overview"
-    assert keys[1] == "API"
-    assert keys[2] == "About"
+    assert keys == ["API", "About", "Zoo"]
+
+
+def test_group_by_section_respects_section_order():
+    pages = [
+        {"url": "u1", "title": "T", "section": "Careers"},
+        {"url": "u2", "title": "T", "section": "Products"},
+    ]
+    grouped = group_by_section(pages, section_order=["Products", "Careers"])
+    keys = list(grouped.keys())
+    assert keys == ["Products", "Careers"]
 
 
 def test_format_link_entry_no_description():
