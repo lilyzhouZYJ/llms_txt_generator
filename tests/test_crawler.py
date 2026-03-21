@@ -77,6 +77,19 @@ def test_get_internal_links_excludes_external_links():
     assert "https://example.com/internal" in links
 
 
+def test_get_internal_links_includes_subdomains():
+    html = make_html(links=["https://docs.example.com/guide", "https://blog.example.com/post"])
+    links = get_internal_links(html, BASE_URL)
+    assert "https://docs.example.com/guide" in links
+    assert "https://blog.example.com/post" in links
+
+
+def test_get_internal_links_excludes_parent_domain_sibling():
+    html = make_html(links=["https://evil-example.com/phishing"])
+    links = get_internal_links(html, BASE_URL)
+    assert "https://evil-example.com/phishing" not in links
+
+
 def test_get_internal_links_deduplicates():
     html = make_html(links=["/about", "/about", "/about#section"])
     links = get_internal_links(html, BASE_URL)

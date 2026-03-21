@@ -38,6 +38,9 @@ def _extract_main_text(html: str, max_chars: int = 3000) -> str:
 
 
 def extract_metadata(html: str, url: str) -> dict:
+    """
+    Extract metadata from an HTML page.
+    """
     soup = BeautifulSoup(html, "html.parser")
 
     # Title: <title> → og:title → last URL path segment

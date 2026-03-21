@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-DESCRIPTION_MAX_LEN = 120
+DESCRIPTION_MAX_LEN = 500
 
 
 def group_by_section(pages: list[dict]) -> dict[str, list[dict]]:
