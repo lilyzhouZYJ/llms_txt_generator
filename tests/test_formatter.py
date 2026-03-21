@@ -1,4 +1,4 @@
-from src.formatter import format_link_entry, generate_llms_txt, group_by_section
+from src.formatter import DESCRIPTION_MAX_LEN, format_link_entry, generate_llms_txt, group_by_section
 
 
 def test_group_by_section_overview_first():
@@ -41,10 +41,11 @@ def test_format_link_entry_truncates_long_description():
     page = {
         "url": "https://x.com/a",
         "title": "Link",
-        "description": "x" * 150,
+        "description": "x" * (DESCRIPTION_MAX_LEN + 50),
     }
     out = format_link_entry(page)
-    assert len(out.split(": ", 1)[-1]) <= 123
+    desc = out.split(": ", 1)[-1]
+    assert len(desc) == DESCRIPTION_MAX_LEN
 
 
 def test_generate_llms_txt_has_h1():

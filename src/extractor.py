@@ -1,3 +1,8 @@
+"""
+Rule-based extractor; extract metadata from an HTML page.
+This provides section hints for the LLM, and also serves as a fallback when the LLM fails.
+"""
+
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup

@@ -1,12 +1,14 @@
-"""Assemble llms.txt from enriched page dicts; no HTTP, no LLM."""
+"""
+Data assembly to format the llms.txt file.
+"""
 
-from __future__ import annotations
-
+# Max length of the description for each link
 DESCRIPTION_MAX_LEN = 500
 
-
 def group_by_section(pages: list[dict]) -> dict[str, list[dict]]:
-    """Group pages by section; Overview first, then alphabetically by section name."""
+    """
+    Group pages by section; Overview first, then alphabetically by section name.
+    """
     groups: dict[str, list[dict]] = {}
     for p in pages:
         sec = p.get("section", "Pages")
@@ -18,9 +20,10 @@ def group_by_section(pages: list[dict]) -> dict[str, list[dict]]:
     rest = sorted(groups.items())
     return dict(overview + rest)
 
-
 def format_link_entry(page: dict) -> str:
-    """Return `- [Title](url)` or `- [Title](url): description` (description truncated to 120 chars)."""
+    """
+    Return `- [Title](url)` or `- [Title](url): description` (description truncated to DESCRIPTION_MAX_LEN).
+    """
     title = page.get("title", "Untitled").strip()
     url = page.get("url", "")
     desc = (page.get("description") or "").strip()
@@ -31,13 +34,14 @@ def format_link_entry(page: dict) -> str:
         desc = desc[: DESCRIPTION_MAX_LEN - 3] + "..."
     return f"{base}: {desc}"
 
-
 def generate_llms_txt(
     pages: list[dict],
     site_name: str,
     site_summary: str,
 ) -> str:
-    """Assemble the llms.txt markdown file."""
+    """
+    Assemble the llms.txt markdown file.
+    """
     lines: list[str] = [f"# {site_name.strip() or 'Untitled'}"]
     if site_summary.strip():
         lines.append("")

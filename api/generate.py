@@ -12,8 +12,7 @@ from src.llm import _normalize_url, enrich_pages
 app = Flask(__name__)
 
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
-DEFAULT_MAX_PAGES = 30
-
+DEFAULT_MAX_PAGES = 50
 
 def _after_request(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -21,9 +20,7 @@ def _after_request(response):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
-
 app.after_request(_after_request)
-
 
 @app.route("/api/generate", methods=["POST", "OPTIONS"])
 def generate():
