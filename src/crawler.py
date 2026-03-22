@@ -14,7 +14,7 @@ from src.url_utils import normalize_http_url
 
 USER_AGENT = "llms-txt-generator/1.0"
 TIMEOUT = 10.0
-MAX_CONCURRENCY = 5
+MAX_CONCURRENCY = 10
 
 # Max BFS depth from the start URL (inclusive). Start = 0; first hop = 1; etc.
 MAX_CRAWL_DEPTH = 2
@@ -122,45 +122,42 @@ async def crawl(
     max_crawl_depth: int = MAX_CRAWL_DEPTH,
 ) -> list[dict]:
     """
-    BFS crawl from start_url.
+    Crawl from start_url using a semaphore to keep MAX_CONCURRENCY requests
+    in flight at all times. Each completed fetch immediately spawns tasks for
+    its discovered links rather than waiting for the rest of the batch.
     """
     start_url = normalize_http_url(start_url)
     if not is_allowed_url(start_url, start_url):
-        # sanity check
         return []
 
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     visited: set[str] = {start_url}
-    queue: list[tuple[str, int]] = [(start_url, 0)]
     results: list[dict] = []
 
     async with httpx.AsyncClient(
         headers={"User-Agent": USER_AGENT},
         follow_redirects=True,
     ) as client:
-        while queue and len(results) < max_pages:
-            batch: list[tuple[str, int]] = [] # (url, depth)
-            while queue and len(batch) < MAX_CONCURRENCY:
-                batch.append(queue.pop(0))
+        async def visit(url: str, depth: int) -> None:
+            if len(results) >= max_pages:
+                return
+            async with semaphore:
+                html = await fetch_page(client, url)
+            if html is None:
+                return
+            if len(results) >= max_pages:
+                return
+            results.append(extract_metadata(html, url))
+            if depth >= max_crawl_depth:
+                return
+            child_tasks = []
+            for link in get_internal_links(html, url, start_url):
+                if link not in visited:
+                    visited.add(link)
+                    child_tasks.append(asyncio.create_task(visit(link, depth + 1)))
+            if child_tasks:
+                await asyncio.gather(*child_tasks)
 
-            htmls = await asyncio.gather(*[fetch_page(client, url) for url, _ in batch])
-
-            for (url, depth), html in zip(batch, htmls):
-                if html is None:
-                    continue
-                if len(results) >= max_pages:
-                    # we only need to fetch max_pages pages
-                    break
-
-                results.append(extract_metadata(html, url))
-
-                next_depth = depth + 1
-                if next_depth > max_crawl_depth:
-                    # reached max crawl depth
-                    continue
-
-                for link in get_internal_links(html, url, start_url):
-                    if link not in visited:
-                        visited.add(link)
-                        queue.append((link, next_depth))
+        await visit(start_url, 0)
 
     return results

@@ -8,7 +8,7 @@ Performs a breadth-first crawl of a website, fetching pages concurrently and ext
 |---|---|---|
 | `USER_AGENT` | `"llms-txt-generator/1.0"` | Sent in the `User-Agent` header |
 | `TIMEOUT` | `10.0` | Per-request timeout in seconds |
-| `MAX_CONCURRENCY` | `5` | Max simultaneous in-flight HTTP requests |
+| `MAX_CONCURRENCY` | `10` | Max simultaneous in-flight HTTP requests |
 | `MAX_CRAWL_DEPTH` | `2` | Maximum hop depth from the start URL (0 = start page, 1 = pages linked from it, 2 = pages linked from those) |
 
 ### Excluded path segments
@@ -16,9 +16,9 @@ Performs a breadth-first crawl of a website, fetching pages concurrently and ext
 URLs whose path contains any of these segments are silently skipped:
 
 ```
-login  auth  admin  static  _next  cdn-cgi  cart  checkout
-account  settings  terms  privacy-policy  cookie  sitemap
-feed  rss  wp-  tag  category  page
+login  logout  signin  signup  register  auth  oauth  callback
+cdn-cgi  _next  static  assets  admin  wp-admin  wp-login
+cart  checkout  account  settings  terms  privacy-policy
 ```
 
 This prevents crawling auth walls, CMS infrastructure, pagination, and purely navigational pages that add noise to the output.
@@ -59,11 +59,14 @@ The main entry point. Runs a BFS crawl starting from `start_url` and returns a l
 
 **Algorithm:**
 
-1. Initialize a queue with `(start_url, depth=0)` and an empty visited set.
-2. Dequeue up to `MAX_CONCURRENCY` URLs and fetch them concurrently with `asyncio.gather`.
-3. For each successful response, extract metadata (via `extract_metadata`) and discover links (via `get_internal_links`).
-4. Enqueue newly discovered links at `depth + 1`, provided they haven't been visited and depth doesn't exceed `max_crawl_depth`.
-5. Repeat until the queue is empty or `max_pages` is reached.
+An `asyncio.Semaphore(MAX_CONCURRENCY)` limits simultaneous in-flight requests. Each URL is processed by an inner `visit(url, depth)` coroutine:
+
+1. If `max_pages` has been reached, return immediately.
+2. Acquire the semaphore and fetch the page; release the semaphore as soon as the response arrives.
+3. Extract metadata and append to results.
+4. Discover links via `get_internal_links`, create an `asyncio.Task` for each unvisited link at `depth + 1` (up to `max_crawl_depth`), then `await asyncio.gather` on those tasks.
+
+Because new tasks are spawned as soon as a fetch completes — rather than waiting for the rest of a fixed batch — the semaphore slots are kept filled continuously. A slow request doesn't delay the processing of other completed fetches.
 
 Pages for which `fetch_page` returns `None` (fetch failure, wrong content type, etc.) are silently skipped — they don't count toward `max_pages`.
 
