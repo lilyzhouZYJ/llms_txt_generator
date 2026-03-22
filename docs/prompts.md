@@ -97,14 +97,13 @@ Used by `llm_refine_sections`. Re-assigns pages to section labels and determines
       "url": "https://example.com/features/x",
       "title": "Feature X",
       "description": "...",
-      "section": "Features",
-      "section_hint": "Features"
+      "section": "Features"
     }
   ]
 }
 ```
 
-`section` is the current assignment (from pass 1 or the extractor); `section_hint` is the extractor's original URL-based guess. Both are provided so the LLM can leverage the URL structure as a signal.
+`section` is the URL-path-based hint from the extractor, which the LLM uses as a starting point before reassigning.
 
 **Output format:**
 ```json

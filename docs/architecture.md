@@ -47,7 +47,6 @@ Each page is a `dict` that gains fields as it moves through the pipeline:
 | `title` | Extractor | Rule-based title (may be overridden by LLM) |
 | `description` | Extractor | Rule-based description (may be overridden by LLM) |
 | `section` | Extractor | Inferred from URL path (may be overridden by LLM) |
-| `section_hint` | `llm_process_pages` | Snapshot of the extractor's section, preserved for the section-refine prompt |
 | `main_text` | Extractor | Stripped page body text (used for LLM input; not in final output) |
 
 ## Failure handling

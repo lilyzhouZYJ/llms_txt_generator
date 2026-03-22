@@ -55,7 +55,7 @@ Derived from the **first** path segment of the URL by looking it up in a built-i
 
 If the path is `/` (root), the section is `"Home"`. Any segment not in the map is capitalized and used as-is (e.g. `/solutions/...` → `"Solutions"`).
 
-This is later overridden by the LLM section-refinement pass. The original value is preserved as `section_hint` to give the LLM useful context.
+This is later overridden by the LLM section-refinement pass.
 
 ### Main text extraction
 
@@ -64,5 +64,4 @@ Removes `<script>`, `<style>`, `<nav>`, `<header>`, `<footer>`, and `<aside>` fr
 ## Interaction with other modules
 
 - Called by `src.crawler.crawl` immediately after each successful page fetch.
-- The `section` value is snapshotted into `section_hint` by `llm_process_pages` before LLM calls begin.
 - The entire output dict is returned as-is by `_rule_based_fallback` when LLM enrichment fails.

@@ -353,7 +353,6 @@ def test_update_pages_with_llm_sections_fills_missing_order():
             "url": "https://example.com/a",
             "title": "A",
             "section": "Zebra",
-            "section_hint": "a",
         },
     ]
     data = {

@@ -23,7 +23,7 @@ SITE_OVERVIEW_SYSTEM_PROMPT = """You write the H1 site name and blockquote summa
 You receive JSON with:
 - base_url: crawl start URL
 - homepage: url, title, and main_text (body text) for the **root / homepage**
-- linked_pages: other crawled pages, each with url, title, optional crawler **description**, and **main_text** (body excerpt). Use main_text for substance; descriptions may be empty or marketing fluff.
+- linked_pages: other crawled pages, each with url, title, and optional **description** (generated from body text in the previous pass). Descriptions may be empty for minimal pages.
 
 Respond with a single JSON object only (no markdown code fences, no commentary):
 {
@@ -33,13 +33,13 @@ Respond with a single JSON object only (no markdown code fences, no commentary):
 
 Rules:
 - site_name: short, human-readable name for the site (derive mainly from the homepage when possible).
-- site_summary: 3–4 sentences for the blockquote under the H1; synthesize the **whole site** using the homepage main_text plus each linked page's main_text (and titles). Neutral and substantive. If there are no linked pages, base site_summary only on the homepage.
+- site_summary: 3–4 sentences for the blockquote under the H1; synthesize the **whole site** using the homepage main_text plus each linked page's title and description. Neutral and substantive. If there are no linked pages, base site_summary only on the homepage.
 - Do not include a pages array; per-page sections are assigned elsewhere.
 """
 
 SECTION_REFINE_SYSTEM_PROMPT = """You assign H2 sections for an llms.txt file. The enrich pass already produced site_name, site_summary, and per-page titles and descriptions.
 
-You receive JSON: site_name, site_summary, crawl start URL, and pages with url, title, optional description, section, and section_hint (path-based hints from the crawler; often identical).
+You receive JSON: site_name, site_summary, crawl start URL, and pages with url, title, optional description, and section (path-based hint from the crawler).
 
 Respond with a single JSON object only (no markdown code fences, no commentary):
 {

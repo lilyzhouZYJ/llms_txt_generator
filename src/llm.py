@@ -160,7 +160,6 @@ def _build_section_refine_prompt(
                 "title": p.get("title", ""),
                 "description": (p.get("description") or "")[:500],
                 "section": p.get("section", ""),
-                "section_hint": p.get("section_hint", ""),
             }
             for p in pages
         ],
@@ -478,9 +477,6 @@ def llm_process_pages(
     """
     if not pages:
         raise ValueError("pages is empty")
-
-    for p in pages:
-        p.setdefault("section_hint", p.get("section", ""))
 
     try:
         # split the pages into homepage and linked pages

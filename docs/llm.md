@@ -29,13 +29,6 @@ Orchestrates the full enrichment pipeline. Takes the raw crawler output and retu
 
 **The homepage is always excluded from the returned pages.** It provides the site name/summary (the document header in llms.txt) rather than appearing as a link entry.
 
-Before the first LLM call, `llm_process_pages` snapshots the extractor's section into `section_hint` on each page so the section-refine prompt can see the original URL-based guess:
-
-```python
-for p in pages:
-    p.setdefault("section_hint", p.get("section", ""))
-```
-
 ## The three passes
 
 ### Pass 1 — Page summaries
@@ -74,7 +67,7 @@ The LLM returns `{"site_name": "...", "site_summary": "..."}`. A missing or empt
 
 **Function:** `llm_refine_sections(pages, base_url, site_name, site_summary, client=None) -> (list[dict], list[str])`
 
-Re-assigns each linked page to a section and returns a preferred section ordering. The prompt receives the full page list including the extractor's `section_hint`, so the LLM can use the URL structure as a starting point.
+Re-assigns each linked page to a section and returns a preferred section ordering. The prompt receives each page's current URL-path-based `section` so the LLM can use it as a starting point.
 
 The LLM returns:
 ```json
