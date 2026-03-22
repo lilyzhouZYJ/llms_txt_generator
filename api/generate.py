@@ -3,7 +3,7 @@
 import asyncio
 import re
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, redirect, request
 
 try:
     from dotenv import load_dotenv
@@ -29,6 +29,11 @@ def _after_request(response):
     return response
 
 app.after_request(_after_request)
+
+@app.route("/")
+def index():
+    """Vercel runs Flask as one function for all paths; static index lives on the CDN at /index.html."""
+    return redirect("/index.html", code=302)
 
 @app.route("/api/generate", methods=["POST", "OPTIONS"])
 def generate():

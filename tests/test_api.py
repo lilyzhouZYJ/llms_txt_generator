@@ -13,6 +13,12 @@ def client():
     return app.test_client()
 
 
+def test_index_redirects_to_static_html(client):
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers.get("Location") == "/index.html"
+
+
 def test_generate_options_cors_headers(client):
     resp = client.options("/api/generate")
     assert resp.status_code == 204
