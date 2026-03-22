@@ -1,4 +1,5 @@
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from src.llm import (
     _update_pages_with_llm_sections,
     _update_pages_with_llm_summaries,
     llm_generate_page_summaries,
+    llm_generate_site_summary,
     llm_process_pages,
 )
 
@@ -37,21 +39,18 @@ def test_llm_process_pages_returns_llm_data_on_success(mocker):
             "main_text": "Article body.",
         },
     ]
-    llm_json = {
-        "site_name": "Example Co",
-        "site_summary": "A product company.",
+    linked_json = {
         "pages": [
-            {
-                "url": "https://example.com/",
-                "title": "Home",
-                "description": "Welcome to our site.",
-            },
             {
                 "url": "https://example.com/blog/a",
                 "title": "Post",
                 "description": "A blog article.",
             },
         ],
+    }
+    site_json = {
+        "site_name": "Example Co",
+        "site_summary": "A product company.",
     }
     refine_json = {
         "section_order": ["Blog", "Home"],
@@ -63,23 +62,24 @@ def test_llm_process_pages_returns_llm_data_on_success(mocker):
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(
         side_effect=[
-            _fake_completion(json.dumps(llm_json)),
+            _fake_completion(json.dumps(linked_json)),
+            _fake_completion(json.dumps(site_json)),
             _fake_completion(json.dumps(refine_json)),
         ]
     )
-    mocker.patch("src.llm._get_openai_client", return_value=client)
+    mocker.patch("src.llm._get_client", return_value=client)
 
     out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
 
     assert site_name == "Example Co"
     assert summary == "A product company."
-    assert out_pages[0]["description"] == "Welcome to our site."
+    assert out_pages[0]["description"] == "Old"
     assert out_pages[0]["section"] == "Home"
     assert out_pages[1]["section"] == "Writing"
     assert out_pages[1]["description"] == "A blog article."
     assert section_order == ["Home", "Writing"]
 
-    assert client.chat.completions.create.call_count == 2
+    assert client.chat.completions.create.call_count == 3
     call_kw = client.chat.completions.create.call_args.kwargs
     assert call_kw["model"] == DEFAULT_MODEL
     assert call_kw["response_format"] == {"type": "json_object"}
@@ -95,7 +95,7 @@ def test_llm_process_pages_falls_back_on_api_error(mocker):
             "main_text": "",
         },
     ]
-    mocker.patch("src.llm._get_openai_client", side_effect=RuntimeError("network"))
+    mocker.patch("src.llm._get_client", side_effect=RuntimeError("network"))
 
     out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
 
@@ -119,7 +119,7 @@ def test_llm_process_pages_falls_back_on_invalid_json(mocker):
     client.chat.completions.create = mocker.Mock(
         return_value=_fake_completion("not json {{{")
     )
-    mocker.patch("src.llm._get_openai_client", return_value=client)
+    mocker.patch("src.llm._get_client", return_value=client)
 
     out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
 
@@ -140,9 +140,9 @@ def test_llm_process_pages_falls_back_when_site_name_missing(mocker):
     ]
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(
-        return_value=_fake_completion(json.dumps({"site_name": "", "pages": []}))
+        return_value=_fake_completion(json.dumps({"site_name": "", "site_summary": ""}))
     )
-    mocker.patch("src.llm._get_openai_client", return_value=client)
+    mocker.patch("src.llm._get_client", return_value=client)
 
     out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
     assert out_pages == pages_in
@@ -230,12 +230,50 @@ def test_update_pages_with_llm_summaries_preserves_unmatched_urls():
             "main_text": "",
         },
     ]
-    data = {"pages": []}
-    merged = _update_pages_with_llm_summaries(pages, data)
+    merged = _update_pages_with_llm_summaries(pages, [])
     assert merged[0]["title"] == "A"
 
 
-def test_llm_generate_page_summaries_strips_markdown_json_fence(mocker):
+def test_llm_generate_page_summaries_splits_into_batches(mocker):
+    mocker.patch("src.llm.PAGES_PER_LLM_REQUEST", 1)
+    linked_pages = [
+        {
+            "url": "https://example.com/a",
+            "title": "A",
+            "description": "",
+            "section": "X",
+            "main_text": "a",
+        },
+        {
+            "url": "https://example.com/b",
+            "title": "B",
+            "description": "",
+            "section": "X",
+            "main_text": "b",
+        },
+    ]
+    r1 = {"pages": [{"url": "https://example.com/a", "title": "A", "description": "da"}]}
+    r2 = {"pages": [{"url": "https://example.com/b", "title": "B", "description": "db"}]}
+    client = mocker.MagicMock()
+    client.chat.completions.create = mocker.Mock(
+        side_effect=[
+            _fake_completion(json.dumps(r1)),
+            _fake_completion(json.dumps(r2)),
+        ]
+    )
+    mocker.patch("src.llm._get_client", return_value=client)
+
+    out = llm_generate_page_summaries(linked_pages, "https://example.com/", client=client, parallel=False)
+
+    assert len(out) == 2
+    assert out[0]["description"] == "da"
+    assert out[1]["description"] == "db"
+    assert client.chat.completions.create.call_count == 2
+    first_system = client.chat.completions.create.call_args_list[0].kwargs["messages"][0]["content"]
+    assert "homepage" in first_system.lower()
+
+
+def test_llm_generate_site_summary_strips_markdown_json_fence(mocker):
     pages_in = [
         {
             "url": "https://example.com/",
@@ -246,16 +284,17 @@ def test_llm_generate_page_summaries_strips_markdown_json_fence(mocker):
         },
     ]
     body = """```json
-{"site_name": "S", "site_summary": "", "pages": [{"url": "https://example.com/", "title": "H", "description": ""}]}
+{"site_name": "S", "site_summary": ""}
 ```"""
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(return_value=_fake_completion(body))
-    mocker.patch("src.llm._get_openai_client", return_value=client)
+    mocker.patch("src.llm._get_client", return_value=client)
 
-    data = llm_generate_page_summaries(pages_in, "https://example.com/", client=client)
-    assert data["site_name"] == "S"
-    assert len(data["pages"]) == 1
-    assert data["pages"][0]["section"] == "Home"
+    site_name, site_summary = llm_generate_site_summary(
+        pages_in[0], [], "https://example.com/", client=client
+    )
+    assert site_name == "S"
+    assert site_summary == ""
 
 
 def test_llm_process_pages_empty_raises():
@@ -273,25 +312,18 @@ def test_llm_process_pages_keeps_first_pass_when_refine_fails(mocker):
             "main_text": "Welcome.",
         },
     ]
-    llm_json = {
+    site_json = {
         "site_name": "Example Co",
         "site_summary": "Summary.",
-        "pages": [
-            {
-                "url": "https://example.com/",
-                "title": "Home",
-                "description": "Welcome to our site.",
-            },
-        ],
     }
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(
         side_effect=[
-            _fake_completion(json.dumps(llm_json)),
+            _fake_completion(json.dumps(site_json)),
             ValueError("refine failed"),
         ]
     )
-    mocker.patch("src.llm._get_openai_client", return_value=client)
+    mocker.patch("src.llm._get_client", return_value=client)
 
     out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
     assert site_name == "Example Co"

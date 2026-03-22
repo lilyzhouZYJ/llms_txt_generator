@@ -1,23 +1,40 @@
-"""System prompts for LLM enrichment (enrich pass + section refine pass)."""
+"""System prompts for LLM enrichment (linked summaries → site overview → sections)."""
 
-ENRICH_SYSTEM_PROMPT = """You help build an llms.txt file for a website. You receive JSON for each crawled page: url, title, and main_text (the actual visible body text of the page, stripped of nav/footer).
+LINKED_PAGES_SUMMARY_SYSTEM_PROMPT = """You help build an llms.txt file. These pages are **not** the site homepage; H2 sections and the site header are produced in later steps.
 
-Respond with a single JSON object only (no markdown code fences, no commentary) with this shape:
+You receive JSON for each page: url, title, and main_text (body text, stripped of nav/footer).
+
+Respond with a single JSON object only (no markdown code fences, no commentary):
 {
-  "site_name": string,
-  "site_summary": string,
   "pages": [
     { "url": string, "title": string, "description": string }
   ]
 }
 
-Do not include H2 sections here—a separate step assigns those later.
+Rules:
+- Output exactly one object per input url (same url strings as provided).
+- Fix titles only when main_text shows the provided title is wrong or generic; otherwise prefer the given title.
+- **Generate descriptions from main_text** (not meta tags). Neutral, substantive, 1–2 sentences. No CTAs like "Find out how...". Empty description only for minimal pages (login, redirect).
+- Do not include site_name or site_summary here.
+"""
+
+SITE_OVERVIEW_SYSTEM_PROMPT = """You write the H1 site name and blockquote summary for an llms.txt file.
+
+You receive JSON with:
+- base_url: crawl start URL
+- homepage: url, title, and main_text (body text) for the **root / homepage**
+- linked_pages: other crawled pages, each with url, title, optional crawler **description**, and **main_text** (body excerpt). Use main_text for substance; descriptions may be empty or marketing fluff.
+
+Respond with a single JSON object only (no markdown code fences, no commentary):
+{
+  "site_name": string,
+  "site_summary": string
+}
 
 Rules:
-- site_name: short name for the site, derived mainly from the root/start URL page when possible.
-- site_summary: 3-4 sentences describing the whole site for the blockquote; base on the root page's main_text.
-- For each input page, output one object with the same url. You may fix the title using main_text if the provided title is wrong or generic, but generally prefer the provided title.
-- descriptions: **YOU MUST GENERATE THIS FROM main_text.** Do NOT copy or paraphrase the meta description from the page—that is usually marketing fluff. Read the main_text (the actual body content) and write a 1–2 sentence summary of what the page actually covers or explains. Be substantive and neutral. No CTAs like "Find out how...", "Learn how...". Prefer informative phrasing (e.g. "How Company X uses Modal for..." not "Find out how..."). Provide a description for every page when main_text has content; empty only for minimal pages (login form, redirect).
+- site_name: short, human-readable name for the site (derive mainly from the homepage when possible).
+- site_summary: 3–4 sentences for the blockquote under the H1; synthesize the **whole site** using the homepage main_text plus each linked page's main_text (and titles). Neutral and substantive. If there are no linked pages, base site_summary only on the homepage.
+- Do not include a pages array; per-page sections are assigned elsewhere.
 """
 
 SECTION_REFINE_SYSTEM_PROMPT = """You assign H2 sections for an llms.txt file. The enrich pass already produced site_name, site_summary, and per-page titles and descriptions.

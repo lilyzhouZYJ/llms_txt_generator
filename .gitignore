@@ -12,3 +12,6 @@ node_modules/
 test.md
 .vercel
 .env*.local
+
+# claude
+memory/

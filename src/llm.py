@@ -1,86 +1,149 @@
-"""Single OpenAI batch call to enrich crawled page metadata; rule-based fallback on failure."""
+"""LLM calls to enrich crawled page metadata; rule-based fallback on failure."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
 
-from src.prompts import ENRICH_SYSTEM_PROMPT, SECTION_REFINE_SYSTEM_PROMPT
+from src.prompts import (
+    LINKED_PAGES_SUMMARY_SYSTEM_PROMPT,
+    SECTION_REFINE_SYSTEM_PROMPT,
+    SITE_OVERVIEW_SYSTEM_PROMPT,
+)
 from src.url_utils import netloc_from_http_url, normalize_http_url
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "gpt-4o-mini"
+PAGES_PER_LLM_REQUEST = 6
+MAIN_TEXT_CHARS_PER_PAGE = 4000
+MAX_PARALLEL_WORKERS = 8
 ENV_API_KEY = "OPENAI_API_KEY"
 ENV_MODEL = "OPENAI_MODEL"
-
-# When there are no pages or no usable root title (should not happen after a normal crawl).
 FALLBACK_SITE_NAME = "Unknown Website"
 
-def _get_openai_client() -> OpenAI:
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def _get_client() -> OpenAI:
     api_key = os.environ.get(ENV_API_KEY)
     if not api_key:
         raise ValueError(f"{ENV_API_KEY} is not set")
     return OpenAI(api_key=api_key)
 
+def _current_model() -> str:
+    return os.environ.get(ENV_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
 def _parse_json_content(raw: str) -> dict:
+    """
+    Parse JSON from a model response, stripping optional markdown code fences.
+    """
     text = raw.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, count=1, flags=re.IGNORECASE)
         text = re.sub(r"\s*```\s*$", "", text, count=1)
     return json.loads(text)
 
-########################################################
-# Helpers for using LLM to generate page summaries
-########################################################
+def _split_into_batches(items: list[dict], size: int) -> list[list[dict]]:
+    """
+    Split a list into batches of a given size.
+    """
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
-def _build_summarize_pages_prompt(pages: list[dict], base_url: str) -> str:
+# ---------------------------------------------------------------------------
+# Page list helpers
+# ---------------------------------------------------------------------------
+
+def _find_root_page(pages: list[dict], base_url: str) -> dict | None:
+    """Return the page whose URL matches base_url, or None."""
+    target = normalize_http_url(base_url)
+    for p in pages:
+        if normalize_http_url(str(p["url"])) == target:
+            return p
+    return None
+
+def _pages_root_first(pages: list[dict], base_url: str) -> list[dict]:
+    """Return pages with the root URL moved to front, preserving order for the rest."""
+    target = normalize_http_url(base_url)
+    root: dict | None = None
+    rest: list[dict] = []
+    for p in pages:
+        if normalize_http_url(str(p["url"])) == target:
+            root = p
+        else:
+            rest.append(p)
+    return [root, *rest] if root is not None else list(pages)
+
+def _split_root_and_linked(pages: list[dict], base_url: str) -> tuple[dict, list[dict]]:
+    """Return (root_page, linked_pages). Falls back to first page as root if no URL match."""
+    root = _find_root_page(pages, base_url)
+    if root is not None:
+        root_key = normalize_http_url(base_url)
+        linked: list[dict] = []
+        for p in pages:
+            if normalize_http_url(str(p["url"])) != root_key:
+                linked.append(p)
+        return root, linked
+    ordered = _pages_root_first(pages, base_url)
+    if not ordered:
+        raise ValueError("pages is empty")
+    return ordered[0], ordered[1:]
+
+
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
+
+def _build_generate_page_summaries_prompt(
+    pages: list[dict],
+    base_url: str,
+    batch_index: int,
+    batch_total: int,
+) -> str:
+    cap = MAIN_TEXT_CHARS_PER_PAGE
     payload = [
         {
             "url": p["url"],
             "title": p.get("title", ""),
-            "main_text": (p.get("main_text") or "")[:4000],
+            "main_text": (p.get("main_text") or "")[:cap],
         }
         for p in pages
     ]
-    return (
-        f"The crawl started at: {base_url}\n\n"
-        "Pages (JSON array):\n"
-        f"{json.dumps(payload, ensure_ascii=False)}"
-    )
+    return "\n".join([
+        f"The crawl started at: {base_url}",
+        f"This is batch {batch_index} of {batch_total}.",
+        "",
+        "Pages (JSON array):",
+        json.dumps(payload, ensure_ascii=False),
+    ])
 
-def _update_pages_with_llm_summaries(orig_pages: list[dict], llm_data: dict) -> list[dict]:
-    """
-    Update the original pages with the new titles and descriptions from the LLM data.
-    """
-    llm_pages = llm_data.get("pages")
-    if not isinstance(llm_pages, list):
-        raise ValueError("response.pages must be a list")
-
-    by_url: dict[str, dict] = {}
-    for lp in llm_pages:
-        if isinstance(lp, dict) and lp.get("url"):
-            by_url[normalize_http_url(str(lp["url"]))] = lp
-
-    # create a new updated_pages list; populate it with llm_data's titles and descriptions
-    updated_pages: list[dict] = []
-    for p in orig_pages:
-        key = normalize_http_url(p["url"])
-        lp = by_url.get(key)
-        row = dict(p)
-        if lp:
-            if "title" in lp and lp["title"] is not None:
-                row["title"] = str(lp["title"]).strip()
-            if "description" in lp and lp["description"] is not None:
-                row["description"] = str(lp["description"]).strip()
-        updated_pages.append(row)
-    return updated_pages
-
-########################################################
-# Helpers for using LLM to refine sections
-########################################################
+def _build_site_overview_user_message(root: dict, linked_pages: list[dict], base_url: str) -> str:
+    cap = MAIN_TEXT_CHARS_PER_PAGE
+    body = {
+        "base_url": base_url,
+        "homepage": {
+            "url": root["url"],
+            "title": root.get("title", ""),
+            "main_text": (root.get("main_text") or "")[:cap],
+        },
+        "linked_pages": [
+            {
+                "url": p["url"],
+                "title": p.get("title", ""),
+                "description": (p.get("description") or "")[:min(2000, cap)],
+                "main_text": (p.get("main_text") or "")[:cap],
+            }
+            for p in linked_pages
+        ],
+    }
+    return json.dumps(body, ensure_ascii=False)
 
 def _build_section_refine_prompt(
     pages: list[dict],
@@ -88,28 +151,56 @@ def _build_section_refine_prompt(
     site_name: str,
     site_summary: str,
 ) -> str:
-    payload = [
-        {
-            "url": p["url"],
-            "title": p.get("title", ""),
-            "description": (p.get("description") or "")[:500],
-            "section": p.get("section", ""),
-            "section_hint": p.get("section_hint", ""),
-        }
-        for p in pages
-    ]
     meta = {
         "site_name": site_name,
         "site_summary": (site_summary or "")[:1500],
         "base_url": base_url,
-        "pages": payload,
+        "pages": [
+            {
+                "url": p["url"],
+                "title": p.get("title", ""),
+                "description": (p.get("description") or "")[:500],
+                "section": p.get("section", ""),
+                "section_hint": p.get("section_hint", ""),
+            }
+            for p in pages
+        ],
     }
     return json.dumps(meta, ensure_ascii=False)
 
+# ---------------------------------------------------------------------------
+# LLM response mergers
+# ---------------------------------------------------------------------------
+
+def _update_pages_with_llm_summaries(
+    orig_pages: list[dict],
+    llm_pages: list[dict]
+) -> list[dict]:
+    """
+    Overlay LLM-generated title/description onto orig_pages.
+    """
+    # maps each URL to the LLM-generated page data
+    by_url: dict[str, dict] = {}
+    for lp in llm_pages:
+        if isinstance(lp, dict) and lp.get("url"):
+            key = normalize_http_url(str(lp["url"]))
+            by_url[key] = lp
+    updated_pages: list[dict] = []
+    for p in orig_pages:
+        orig_page = dict(p)
+        llm_page = by_url.get(normalize_http_url(p["url"]))
+        if llm_page:
+            # update the original page
+            if llm_page.get("title") is not None:
+                orig_page["title"] = str(llm_page["title"]).strip()
+            if llm_page.get("description") is not None:
+                orig_page["description"] = str(llm_page["description"]).strip()
+        updated_pages.append(orig_page)
+    return updated_pages
+
 def _complete_section_order(section_order: list[str], sections_used: set[str]) -> list[str]:
     """
-    Clean up LLM-generated section_order to make sure it contains every section that appear on
-    at least one page and that it doesn't contain duplicates.
+    Deduplicate section_order and append any sections not present in the LLM list.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -118,81 +209,76 @@ def _complete_section_order(section_order: list[str], sections_used: set[str]) -
         if s and s in sections_used and s not in seen:
             out.append(s)
             seen.add(s)
-
-    # Sections that appear on at least one page but did not appear in the LLM-generated
-    # section_order; append them in alphabetical order.
-    remaining = sections_used - seen
-    for s in sorted(remaining):
+    for s in sorted(sections_used - seen):
         out.append(s)
-        seen.add(s)
     return out
 
 def _update_pages_with_llm_sections(orig_pages: list[dict], llm_data: dict) -> tuple[list[dict], list[str]]:
     """
-    Update the original pages with the new sections from the LLM data.
+    Overlay LLM-assigned sections and return (updated_pages, ordered_section_names).
     """
     llm_pages = llm_data.get("pages")
     if not isinstance(llm_pages, list):
         raise ValueError("response.pages must be a list")
 
+    # Map each URL to the LLM-assigned section label
     by_url: dict[str, str] = {}
     for lp in llm_pages:
         if isinstance(lp, dict) and lp.get("url") and lp.get("section") is not None:
-            by_url[normalize_http_url(str(lp["url"]))] = str(lp["section"]).strip()
+            key = normalize_http_url(str(lp["url"]))
+            by_url[key] = str(lp["section"]).strip()
 
-    # create a new updated_pages list; populate it with llm_data's sections
+    # Apply the LLM section to each page (keep original section if the URL wasn't returned)
     updated_pages: list[dict] = []
     for p in orig_pages:
-        row = dict(p)
+        page = dict(p)
         key = normalize_http_url(p["url"])
         if key in by_url:
-            row["section"] = by_url[key]
-        updated_pages.append(row)
+            page["section"] = by_url[key]
+        updated_pages.append(page)
 
-    # check which sections actually appear in the updated_pages list;
-    # if section is empty, use "Pages" as default
+    # Collect the distinct section names that actually appear after the update
     sections_used: set[str] = set()
-    for row in updated_pages:
-        name = str(row.get("section") or "Pages").strip() or "Pages"
-        sections_used.add(name)
+    for page in updated_pages:
+        section = str(page.get("section") or "").strip() or "Pages"
+        sections_used.add(section)
 
-    # clean up any potential noise from the LLM-generated section order
+    # Extract the LLM's preferred section ordering, ignoring blank entries
     llm_section_order = llm_data.get("section_order")
+    if not isinstance(llm_section_order, list):
+        raise ValueError("response.section_order must be a list")
     section_order: list[str] = []
-    if isinstance(llm_section_order, list):
-        for s in llm_section_order:
-            if not s:
-                # skip empty section names
-                continue
-            stripped = str(s).strip()
-            if stripped:
-                section_order.append(stripped)
+    for s in llm_section_order:
+        s = str(s).strip()
+        if s:
+            section_order.append(s)
 
-    # make sure the section_order contains every section that exists
-    section_order = _complete_section_order(section_order, sections_used)
-    return updated_pages, section_order
+    return updated_pages, _complete_section_order(section_order, sections_used)
 
-########################################################
-# Entry points for using LLM to (1) generate page summaries and (2) refine sections
-########################################################
 
-def llm_generate_page_summaries(pages: list[dict], base_url: str, client: OpenAI | None = None) -> dict:
+# ---------------------------------------------------------------------------
+# LLM API calls
+# ---------------------------------------------------------------------------
+
+def llm_generate_site_summary(
+    homepage: dict,
+    linked_pages: list[dict],
+    base_url: str,
+    client: OpenAI | None = None,
+) -> tuple[str, str]:
     """
-    Uses LLM to generate site_name, site_summary, as well as titles and descriptions for each page.
+    Use LLM to generate a site summary from the homepage and linked pages.
+    Returns the site_name and site_summary.
     """
-    print(f"[llm_generate_page_summaries] processing {len(pages)} pages for website: {base_url}")
-    if not pages:
-        raise ValueError("pages is empty")
+    logger.info("Generating site summary for %s (with %d linked pages)", base_url, len(linked_pages))
+    if client is None:
+        client = _get_client()
 
-    user_message = _build_summarize_pages_prompt(pages, base_url)
-    model = os.environ.get(ENV_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
-
-    openai_client = client if client is not None else _get_openai_client()
-    response = openai_client.chat.completions.create(
-        model=model,
+    response = client.chat.completions.create(
+        model=_current_model(),
         messages=[
-            {"role": "system", "content": ENRICH_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "system", "content": SITE_OVERVIEW_SYSTEM_PROMPT},
+            {"role": "user", "content": _build_site_overview_user_message(homepage, linked_pages, base_url)},
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
@@ -200,22 +286,126 @@ def llm_generate_page_summaries(pages: list[dict], base_url: str, client: OpenAI
     content = response.choices[0].message.content
     if not content:
         raise ValueError("empty model response")
-    print(f"[llm_generate_page_summaries] received model response")
 
-    # parse llm response and update pages with the new titles and descriptions
     data = _parse_json_content(content)
-    updated_pages = _update_pages_with_llm_summaries(pages, data)
-
     site_name = str(data.get("site_name") or "").strip()
     site_summary = str(data.get("site_summary") or "").strip()
     if not site_name:
         raise ValueError("missing site_name in model response")
 
-    return {
-        "site_name": site_name,
-        "site_summary": site_summary,
-        "pages": updated_pages,
-    }
+    logger.info("Site summary generation complete for %s: %s", base_url, site_name)
+    return site_name, site_summary
+
+def _llm_generate_page_summaries_batch(
+    pages: list[dict],
+    base_url: str,
+    batch_index: int,
+    batch_total: int,
+    model: str,
+    client: OpenAI,
+) -> list[dict]:
+    """
+    Used by llm_generate_page_summaries in batch mode.
+    Call the LLM for one batch of linked pages, to generate title and description for each page.
+    
+    Returns a list of the updated pages.
+    Each page contains the generated title and description.
+    """
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": LINKED_PAGES_SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": _build_generate_page_summaries_prompt(
+                pages, base_url, batch_index, batch_total
+            )},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+    )
+    content = response.choices[0].message.content
+    if not content:
+        raise ValueError("empty model response")
+    data = _parse_json_content(content)
+    updated_pages = data.get("pages")
+    if not isinstance(updated_pages, list):
+        raise ValueError("response.pages must be a list")
+    return updated_pages
+
+def llm_generate_page_summaries(
+    pages: list[dict],
+    base_url: str,
+    client: OpenAI | None = None,
+    parallel: bool = True,
+) -> list[dict]:
+    """
+    Generate LLM title + description for each linked page via batched calls.
+    Batches run in parallel when parallel=True and there is more than one batch.
+    """
+    if not pages:
+        return []
+    logger.info("Generating page summaries: %d pages for %r", len(pages), base_url)
+
+    model = _current_model()
+    openai_client = client or _get_client()
+
+    # split into batches
+    batches = _split_into_batches(pages, PAGES_PER_LLM_REQUEST)
+    n_batch = len(batches)
+    updated_pages: list[dict] = []
+
+    if n_batch > 1 and parallel:
+        api_key = os.environ.get(ENV_API_KEY)
+        if not api_key:
+            raise ValueError(f"{ENV_API_KEY} is not set")
+
+        def _run_batch(batch_index: int, batch: list[dict]) -> tuple[int, list[dict]]:
+            # Each thread gets its own client — httpx.Client is not thread-safe
+            per_thread_client = OpenAI(api_key=api_key)
+            updated_batch = _llm_generate_page_summaries_batch(
+                batch,
+                base_url,
+                batch_index=batch_index + 1,
+                batch_total=n_batch,
+                model=model,
+                client=per_thread_client,
+            )
+            logger.info("Page summaries batch %d/%d complete", batch_index + 1, n_batch)
+            return batch_index, updated_batch
+
+        # stores the result of each batch
+        batch_results: list[list[dict] | None] = [None] * n_batch
+
+        # run batches in parallel
+        with ThreadPoolExecutor(max_workers=min(n_batch, MAX_PARALLEL_WORKERS)) as pool:
+            futures = [pool.submit(_run_batch, i, batch) for i, batch in enumerate(batches)]
+            for fut in as_completed(futures):
+                batch_index, updated_batch = fut.result()
+                batch_results[batch_index] = updated_batch
+        updated_pages = []
+        for result in batch_results:
+            if result is not None:
+                for page in result:
+                    updated_pages.append(page)
+    else:
+        # run batches sequentially
+        for i, batch in enumerate(batches):
+            updated_batch = _llm_generate_page_summaries_batch(
+                batch,
+                base_url,
+                batch_index=i + 1,
+                batch_total=n_batch,
+                model=model,
+                client=openai_client,
+            )
+            logger.info("Page summaries batch %d/%d complete", i + 1, n_batch)
+            updated_pages.extend(updated_batch)
+
+    if not updated_pages:
+        # something went wrong
+        raise ValueError("no updated pages")
+
+    # update the pages with the LLM-generated title and description
+    return _update_pages_with_llm_summaries(pages, updated_pages)
 
 def llm_refine_sections(
     pages: list[dict],
@@ -230,19 +420,17 @@ def llm_refine_sections(
     Each page contains url, title, description, and its assigned section.
     The section_order is a list of section names in the order they should be displayed.
     """
-    print(f"[llm_refine_sections] processing {len(pages)} pages for website: {base_url}")
     if not pages:
         raise ValueError("pages is empty")
+    logger.info("Refining sections: %d pages for %r", len(pages), base_url)
+    if client is None:
+        client = _get_client()
 
-    user_message = _build_section_refine_prompt(pages, base_url, site_name, site_summary)
-    model = os.environ.get(ENV_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
-
-    openai_client = client if client is not None else _get_openai_client()
-    response = openai_client.chat.completions.create(
-        model=model,
+    response = client.chat.completions.create(
+        model=_current_model(),
         messages=[
             {"role": "system", "content": SECTION_REFINE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": _build_section_refine_prompt(pages, base_url, site_name, site_summary)},
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
@@ -250,90 +438,76 @@ def llm_refine_sections(
     content = response.choices[0].message.content
     if not content:
         raise ValueError("empty model response")
-    print(f"[llm_refine_sections] received model response")
 
-    data = _parse_json_content(content)
+    logger.info("Section refinement complete")
+    return _update_pages_with_llm_sections(pages, _parse_json_content(content))
 
-    # update pages with new LLM-generated sections;
-    # also returns the new section order
-    return _update_pages_with_llm_sections(pages, data)
 
-########################################################
-# Fallback to rule-based sectioning if the LLM calls fail
-########################################################
-
-def _find_root_page(pages: list[dict], base_url: str) -> dict | None:
-    """
-    Find the root page for the website.
-    The root page is the page that is the base URL of the website.
-    """
-    target = normalize_http_url(base_url)
-    for p in pages:
-        if normalize_http_url(str(p["url"])) == target:
-            return p
-    return None
+# ---------------------------------------------------------------------------
+# Fallback
+# ---------------------------------------------------------------------------
 
 def _rule_based_fallback(pages: list[dict], base_url: str) -> tuple[list[dict], str, str]:
     """
-    Fallback to rule-based sectioning if the LLM calls fail.
-    Returns (pages, site_name, site_summary).
-    Each page contains url, title, description, and its assigned section.
-    The site_name is the title of the root page, fallback to the domain name.
-    The site_summary is the description of the root page, fallback to an empty string.
+    Return rule-based (pages, site_name, site_summary) when LLM calls fail.
     """
     root_page = _find_root_page(pages, base_url)
     if root_page:
         site_name = (root_page.get("title") or "").strip() or FALLBACK_SITE_NAME
         site_summary = (root_page.get("description") or "").strip()
     else:
-        # No page matched base_url; use host from URL (e.g. example.com) for site_name.
         site_name = netloc_from_http_url(base_url) or FALLBACK_SITE_NAME
         site_summary = ""
     return pages, site_name, site_summary
 
-########################################################
-# Entry point for processing pages
-########################################################
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
-def llm_process_pages(pages: list[dict], base_url: str) -> tuple[list[dict], str, str, list[str] | None]:
+def llm_process_pages(
+    pages: list[dict],
+    base_url: str,
+    parallel: bool = True,
+) -> tuple[list[dict], str, str, list[str] | None]:
     """
-    Process crawled pages using LLM.
-    This makes two LLM calls:
-    (1) produce site_name, site_summary, and a list of pages with titles and descriptions for each
-    (2) produce a list of sections and order the sections based on relevance
-
+    Enrich crawled pages with LLM: titles/descriptions and section labels.
+    Falls back to rule-based extractor data on any LLM failure.
     Returns (pages, site_name, site_summary, section_order).
-    Each page contains url, title, description, and its assigned section.
     """
     if not pages:
-        # this is NOT expected since the homepage should always be crawled
         raise ValueError("pages is empty")
 
     for p in pages:
         p.setdefault("section_hint", p.get("section", ""))
 
     try:
-        # (1) generate site_name, site_summary, and titles and descriptions for each page
-        data = llm_generate_page_summaries(pages, base_url)
-        pages_out = data["pages"]
-        site_name = data["site_name"]
-        site_summary = data["site_summary"]
+        # split the pages into homepage and linked pages
+        homepage, linked_pages = _split_root_and_linked(pages, base_url)
 
-        # (2) refine the sections and order them based on relevance
-        section_order: list[str] | None
+        if parallel:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f_linked = pool.submit(llm_generate_page_summaries, linked_pages, base_url, None, parallel)
+                linked_pages_copy: list[dict] = []
+                for p in linked_pages:
+                    linked_pages_copy.append(dict(p))
+                f_site = pool.submit(llm_generate_site_summary, dict(homepage), linked_pages_copy, base_url)
+                linked_out = f_linked.result()
+                site_name, site_summary = f_site.result()
+        else:
+            linked_out = llm_generate_page_summaries(linked_pages, base_url, parallel=False)
+            site_name, site_summary = llm_generate_site_summary(homepage, linked_out, base_url)
+
+        pages_out = [dict(homepage)] + linked_out
+
         try:
-            pages_out, order = llm_refine_sections(
-                pages_out,
-                base_url,
-                site_name,
-                site_summary,
-            )
-            section_order = order
+            pages_out, section_order = llm_refine_sections(pages_out, base_url, site_name, site_summary)
         except Exception:
-            traceback.print_exc()
+            logger.exception("Section refinement failed; skipping")
             section_order = None
+
         return pages_out, site_name, site_summary, section_order
+
     except Exception:
-        traceback.print_exc()
+        logger.exception("LLM enrichment failed; falling back to rule-based data")
         pages_out, site_name, site_summary = _rule_based_fallback(pages, base_url)
         return pages_out, site_name, site_summary, None
