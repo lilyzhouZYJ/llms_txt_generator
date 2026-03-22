@@ -81,6 +81,10 @@ Generated `llms.txt` preview:
 
 ![Generated llms.txt preview](assets/llms-generator-generated.png)
 
+## Future work
+
+- **Pipeline crawling with LLM processing** — currently the full crawl must complete before any LLM calls begin. Page summary batches (6 pages each) could start as soon as enough pages have been crawled, overlapping most of the crawl latency with LLM latency. This would require turning the crawler into an async generator or adding a producer-consumer queue between the crawler and the LLM layer.
+
 ## More documentation
 
 - **[`docs/`](docs/)** — module-level documentation (architecture, crawler, LLM pipeline, frontend, and related utilities).

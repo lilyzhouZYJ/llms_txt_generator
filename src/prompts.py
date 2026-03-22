@@ -48,8 +48,10 @@ Respond with a single JSON object only (no markdown code fences, no commentary):
 }
 
 Rules:
-- Target **6–8 distinct section names** total. Merge related labels (e.g. "Blog" + "Articles" → one section name).
+- The input `section` is a path-based hint and your starting point, but **use each page's description (and title if description is empty) to decide the true best section**. A description may reveal that a page belongs somewhere different from its URL path, or that two pages with different path hints actually belong together.
+- Target **6–8 distinct section names** total. Merge related labels (e.g. "Blog" + "Articles" → one section name). Use descriptions to judge whether pages are semantically similar enough to merge.
 - If you still have more than 8 section names after merging, **collapse** the extras by assigning those pages to broader existing sections (use site_name and site_summary to judge what fits). You are **renaming and merging buckets**, not deleting pages: **every input url stays in `pages`** with one final `section` string.
+- For pages with no description, fall back to the title and URL path hint to assign a section.
 - **section_order** lists each distinct section **once**, **most important first** (primary product/docs first; careers, legal, press typically later unless the site is mainly about those).
 - Every input url must appear **exactly once** in `pages`—same count as the input list—with its final `section` after all merges.
 - Use the same spelling for a section in `section_order` and in each `pages[].section`.
