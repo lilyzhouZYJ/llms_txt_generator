@@ -52,10 +52,10 @@ def test_llm_process_pages_returns_llm_data_on_success(mocker):
         "site_name": "Example Co",
         "site_summary": "A product company.",
     }
+    # Homepage is excluded from section refinement — only linked pages are passed
     refine_json = {
-        "section_order": ["Blog", "Home"],
+        "section_order": ["Writing"],
         "pages": [
-            {"url": "https://example.com/", "section": "Home"},
             {"url": "https://example.com/blog/a", "section": "Writing"},
         ],
     }
@@ -73,11 +73,12 @@ def test_llm_process_pages_returns_llm_data_on_success(mocker):
 
     assert site_name == "Example Co"
     assert summary == "A product company."
-    assert out_pages[0]["description"] == "Old"
-    assert out_pages[0]["section"] == "Home"
-    assert out_pages[1]["section"] == "Writing"
-    assert out_pages[1]["description"] == "A blog article."
-    assert section_order == ["Home", "Writing"]
+    # Homepage is excluded; out_pages contains only linked pages
+    assert len(out_pages) == 1
+    assert out_pages[0]["url"] == "https://example.com/blog/a"
+    assert out_pages[0]["description"] == "A blog article."
+    assert out_pages[0]["section"] == "Writing"
+    assert section_order == ["Writing"]
 
     assert client.chat.completions.create.call_count == 3
     call_kw = client.chat.completions.create.call_args.kwargs
@@ -101,7 +102,7 @@ def test_llm_process_pages_falls_back_on_api_error(mocker):
 
     assert site_name == "Root Title"
     assert summary == "Root desc"
-    assert out_pages == pages_in
+    assert out_pages == []  # homepage is excluded; no linked pages exist
     assert section_order is None
 
 
@@ -123,7 +124,7 @@ def test_llm_process_pages_falls_back_on_invalid_json(mocker):
 
     out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
 
-    assert out_pages == pages_in
+    assert out_pages == []  # homepage is excluded; no linked pages exist
     assert site_name == "T"
     assert section_order is None
 
@@ -145,7 +146,7 @@ def test_llm_process_pages_falls_back_when_site_name_missing(mocker):
     mocker.patch("src.llm._get_client", return_value=client)
 
     out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
-    assert out_pages == pages_in
+    assert out_pages == []  # homepage is excluded; no linked pages exist
     assert site_name == "T"
     assert section_order is None
 
@@ -162,7 +163,7 @@ def test_llm_process_pages_falls_back_without_api_key(mocker):
         },
     ]
     out_pages, site_name, _, section_order = llm_process_pages(pages_in, "https://example.com/")
-    assert out_pages == pages_in
+    assert out_pages == []  # homepage is excluded; no linked pages exist
     assert site_name == "Only"
     assert section_order is None
 
@@ -311,7 +312,19 @@ def test_llm_process_pages_keeps_first_pass_when_refine_fails(mocker):
             "section": "Home",
             "main_text": "Welcome.",
         },
+        {
+            "url": "https://example.com/about",
+            "title": "About",
+            "description": "",
+            "section": "About",
+            "main_text": "About us.",
+        },
     ]
+    linked_json = {
+        "pages": [
+            {"url": "https://example.com/about", "title": "About", "description": "About the company."},
+        ],
+    }
     site_json = {
         "site_name": "Example Co",
         "site_summary": "Summary.",
@@ -319,6 +332,7 @@ def test_llm_process_pages_keeps_first_pass_when_refine_fails(mocker):
     client = mocker.MagicMock()
     client.chat.completions.create = mocker.Mock(
         side_effect=[
+            _fake_completion(json.dumps(linked_json)),
             _fake_completion(json.dumps(site_json)),
             ValueError("refine failed"),
         ]
@@ -327,7 +341,9 @@ def test_llm_process_pages_keeps_first_pass_when_refine_fails(mocker):
 
     out_pages, site_name, summary, section_order = llm_process_pages(pages_in, "https://example.com/")
     assert site_name == "Example Co"
-    assert out_pages[0]["section"] == "Home"
+    assert len(out_pages) == 1
+    assert out_pages[0]["url"] == "https://example.com/about"
+    assert out_pages[0]["section"] == "About"
     assert section_order is None
 
 

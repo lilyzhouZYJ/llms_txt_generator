@@ -138,7 +138,6 @@ def _build_site_overview_user_message(root: dict, linked_pages: list[dict], base
                 "url": p["url"],
                 "title": p.get("title", ""),
                 "description": (p.get("description") or "")[:min(2000, cap)],
-                "main_text": (p.get("main_text") or "")[:cap],
             }
             for p in linked_pages
         ],
@@ -268,7 +267,9 @@ def llm_generate_site_summary(
 ) -> tuple[str, str]:
     """
     Use LLM to generate a site summary from the homepage and linked pages.
-    Returns the site_name and site_summary.
+    In the LLM request, we will include the homepage content, and the generated
+    title/descriptions for the linked pages.
+    Returns the generated site_name and site_summary.
     """
     logger.info("Generating site summary for %s (with %d linked pages)", base_url, len(linked_pages))
     if client is None:
@@ -340,6 +341,7 @@ def llm_generate_page_summaries(
     """
     Generate LLM title + description for each linked page via batched calls.
     Batches run in parallel when parallel=True and there is more than one batch.
+    Returns the updated pages.
     """
     if not pages:
         return []
@@ -484,30 +486,23 @@ def llm_process_pages(
         # split the pages into homepage and linked pages
         homepage, linked_pages = _split_root_and_linked(pages, base_url)
 
-        if parallel:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                f_linked = pool.submit(llm_generate_page_summaries, linked_pages, base_url, None, parallel)
-                linked_pages_copy: list[dict] = []
-                for p in linked_pages:
-                    linked_pages_copy.append(dict(p))
-                f_site = pool.submit(llm_generate_site_summary, dict(homepage), linked_pages_copy, base_url)
-                linked_out = f_linked.result()
-                site_name, site_summary = f_site.result()
-        else:
-            linked_out = llm_generate_page_summaries(linked_pages, base_url, parallel=False)
-            site_name, site_summary = llm_generate_site_summary(homepage, linked_out, base_url)
-
-        pages_out = [dict(homepage)] + linked_out
+        updated_linked_pages = llm_generate_page_summaries(linked_pages, base_url, parallel=parallel)
+        site_name, site_summary = llm_generate_site_summary(homepage, updated_linked_pages, base_url)
 
         try:
-            pages_out, section_order = llm_refine_sections(pages_out, base_url, site_name, site_summary)
+            # Only linked pages go to section refinement — homepage is excluded from link sections
+            updated_linked_pages, section_order = llm_refine_sections(updated_linked_pages, base_url, site_name, site_summary)
         except Exception:
             logger.exception("Section refinement failed; skipping")
             section_order = None
 
-        return pages_out, site_name, site_summary, section_order
+        return updated_linked_pages, site_name, site_summary, section_order
 
     except Exception:
         logger.exception("LLM enrichment failed; falling back to rule-based data")
-        pages_out, site_name, site_summary = _rule_based_fallback(pages, base_url)
-        return pages_out, site_name, site_summary, None
+        _, site_name, site_summary = _rule_based_fallback(pages, base_url)
+        try:
+            _, fallback_linked = _split_root_and_linked(pages, base_url)
+        except Exception:
+            fallback_linked = []
+        return fallback_linked, site_name, site_summary, None
