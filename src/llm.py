@@ -265,10 +265,13 @@ def llm_generate_site_summary(
     client: OpenAI | None = None,
 ) -> tuple[str, str]:
     """
-    Use LLM to generate a site summary from the homepage and linked pages.
-    In the LLM request, we will include the homepage content, and the generated
-    title/descriptions for the linked pages.
-    Returns the generated site_name and site_summary.
+    Generate site name and summary from the homepage and linked pages.
+
+    Sends to LLM:
+    - base_url (where the crawl started)
+    - homepage: url, title, main_text (truncated to MAIN_TEXT_CHARS_PER_PAGE)
+    - linked pages: url, title, description (no main_text)
+    Returns from LLM: {site_name, site_summary}
     """
     logger.info("Generating site summary for %s (with %d linked pages)", base_url, len(linked_pages))
     if client is None:
@@ -305,11 +308,14 @@ def _llm_generate_page_summaries_batch(
     client: OpenAI,
 ) -> list[dict]:
     """
-    Used by llm_generate_page_summaries in batch mode.
-    Call the LLM for one batch of linked pages, to generate title and description for each page.
-    
-    Returns a list of the updated pages.
-    Each page contains the generated title and description.
+    LLM call for one batch of linked pages.
+
+    Sends to LLM:
+    - base_url (where the crawl started)
+    - batch index
+    - for each page: url, title, main_text (truncated to MAIN_TEXT_CHARS_PER_PAGE)
+    Returns from LLM:
+    - list of pages, with {url, title, description} for each
     """
     response = client.chat.completions.create(
         model=model,
@@ -340,7 +346,13 @@ def llm_generate_page_summaries(
     """
     Generate LLM title + description for each linked page via batched calls.
     Batches run in parallel when parallel=True and there is more than one batch.
-    Returns the updated pages.
+
+    Sends to LLM (per batch):
+    - base_url (where the crawl started)
+    - batch index
+    - for each page: url, title, main_text (truncated to MAIN_TEXT_CHARS_PER_PAGE)
+    Returns from LLM (per batch):
+    - list of pages, with {url, title, description} for each
     """
     if not pages:
         return []
@@ -416,10 +428,16 @@ def llm_refine_sections(
     client: OpenAI | None = None,
 ) -> tuple[list[dict], list[str]]:
     """
-    Uses LLM to refine the sections and order them based on relevance to the base website.
-    Returns (updated_pages, section_order).
-    Each page contains url, title, description, and its assigned section.
-    The section_order is a list of section names in the order they should be displayed.
+    Assign final section labels to linked pages and determine their display order.
+
+    Sends to LLM:
+    - site_name
+    - site_summary
+    - base_url (where the crawl started)
+    - for each page: url, title, description, section (URL-path-based hint from extractor)
+    Returns from LLM:
+    - list of section names in the order they should be displayed
+    - list of pages, with {url, section} for each
     """
     if not pages:
         raise ValueError("pages is empty")
